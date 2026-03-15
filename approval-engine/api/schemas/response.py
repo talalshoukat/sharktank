@@ -14,6 +14,7 @@ class RuleBreakdown(BaseModel):
     violation_history: int = 0
     kashif_score: int = 0
     nin_presence: int = 0
+    contract_verification: int = 0
 
 
 class ScoreResponse(BaseModel):

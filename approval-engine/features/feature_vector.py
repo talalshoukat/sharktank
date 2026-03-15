@@ -17,7 +17,8 @@ def build_feature_vector(raw: dict) -> dict:
         transaction_trace_id, establishment_id, person_id,
         law_type, law_category, nin_present, joining_date,
         est_approval_rate, contributor_approval_rate,
-        violation_count_per_month, kashif_score, status
+        violation_count_per_month, kashif_score, status,
+        contract_id   ← passed to HRSD for contract verification scoring
 
     Returns:
         dict with all feature values required by rule_engine and ml_scorer.
@@ -47,6 +48,9 @@ def build_feature_vector(raw: dict) -> dict:
 
         # KASHIF fraud score (raw value, higher = more risk)
         "kashif_score": _safe_float(raw.get("kashif_score")),
+
+        # Contract ID for HRSD verification (from transaction params)
+        "contract_id": raw.get("contract_id"),
 
         # Ground truth label (only present during training)
         "is_approved": _encode_status(raw.get("status")),

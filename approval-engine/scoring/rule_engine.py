@@ -6,6 +6,7 @@ This makes unit testing trivial and reason messages self-assemble.
 from __future__ import annotations
 
 from config.settings import settings
+from scoring.contract_scorer import score_contract_verification
 
 
 def score_establishment_law(law_category: str | None) -> tuple[int, str | None]:
@@ -157,6 +158,7 @@ def compute_rule_score(features: dict) -> tuple[int, list[str], dict]:
         ("violation_history",      score_violation_history(features.get("violation_count_per_month", 0.0))),
         ("kashif_score",           score_kashif(features.get("kashif_score"))),
         ("nin_presence",           score_nin_presence(features.get("nin_present", False))),
+        ("contract_verification",  score_contract_verification(features.get("contract_id"))),
     ]
 
     total = settings.base_score

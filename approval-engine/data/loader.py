@@ -213,7 +213,16 @@ def fetch_single_transaction(
             months_active = viol.get("MONTHSACTIVE", 1) or 1
             violation_count_per_month = float(viol_count) / float(months_active)
 
-    # 7. KASHIF fraud score
+    # 7. Contract ID for HRSD verification
+    # The contract ID is stored as a transaction parameter (e.g. "ContractId" or "HRSDContractId").
+    # Adjust the key name below to match the actual PARAMKEY in T_TRANSACTIONTRACEPARAM.
+    contract_id: str | None = (
+        params.get("ContractId")
+        or params.get("HRSDContractId")
+        or params.get("ContractNumber")
+    )
+
+    # 8. KASHIF fraud score
     kashif_score: float | None = None
     if establishment_id:
         df_enc = load_data([int(establishment_id)], fq.EST_ENC_MAP_SQL, fraud_conn)
@@ -239,6 +248,7 @@ def fetch_single_transaction(
         "contributor_approval_rate": contributor_approval_rate,
         "violation_count_per_month": violation_count_per_month,
         "kashif_score": kashif_score,
+        "contract_id": contract_id,
         "status": txn.get("STATUS"),
     }
 
