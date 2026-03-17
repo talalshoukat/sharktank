@@ -213,14 +213,42 @@ def fetch_single_transaction(
             months_active = viol.get("MONTHSACTIVE", 1) or 1
             violation_count_per_month = float(viol_count) / float(months_active)
 
-    # 7. Contract ID for HRSD verification
-    # The contract ID is stored as a transaction parameter (e.g. "ContractId" or "HRSDContractId").
-    # Adjust the key name below to match the actual PARAMKEY in T_TRANSACTIONTRACEPARAM.
-    contract_id: str | None = (
-        params.get("ContractId")
-        or params.get("HRSDContractId")
-        or params.get("ContractNumber")
+    # 7. HRSD + Insurance identity fields
+    # employee_id: the employee's ID number — try NIN first, then Iqama
+    # Adjust PARAMKEY names below to match actual keys in T_TRANSACTIONTRACEPARAM.
+    employee_id: str | None = (
+        params.get("NIN")
+        or params.get("Iqama")
+        or params.get("EmployeeId")
+        or str(person_id) if person_id else None
     )
+    employee_id_type: str = _resolve_id_type(params)
+
+    # unified_national_no: employer's Unified National Number from the establishment record
+    unified_national_no: str | None = (
+        est_record.get("UNIFIEDNATIONALID")
+        or est_record.get("UNIFIDNATIONALID")
+        or params.get("UnifiedNationalNo")
+    )
+
+    # Engagement dates — used by the insurance checker
+    # Pulled from violation/engagement request; adjust column names to match your schema
+    engagement_start_date: str | None = None
+    engagement_end_date: str | None = None
+    if violation_req_id:
+        df_viol_dates = pd.read_sql(
+            aq.SINGLE_VIOLATION_REQ_SQL,
+            ameen_conn,
+            params={"violation_req_id": int(violation_req_id)},
+        )
+        if not df_viol_dates.empty:
+            vr = df_viol_dates.iloc[0]
+            start = vr.get("JOININGDATE") or vr.get("STARTDATE") or vr.get("ENGAGEMENTSTARTDATE")
+            end = vr.get("ENDDATE") or vr.get("ENGAGEMENTENDDATE")
+            if start:
+                engagement_start_date = str(start)[:10]
+            if end:
+                engagement_end_date = str(end)[:10]
 
     # 8. KASHIF fraud score
     kashif_score: float | None = None
@@ -248,9 +276,30 @@ def fetch_single_transaction(
         "contributor_approval_rate": contributor_approval_rate,
         "violation_count_per_month": violation_count_per_month,
         "kashif_score": kashif_score,
-        "contract_id": contract_id,
+        "employee_id": employee_id,
+        "employee_id_type": employee_id_type,
+        "unified_national_no": unified_national_no,
+        "engagement_start_date": engagement_start_date,
+        "engagement_end_date": engagement_end_date,
         "status": txn.get("STATUS"),
     }
+
+
+def _resolve_id_type(params: dict) -> str:
+    """
+    Infer the employee ID type from transaction parameters.
+    Adjust the PARAMKEY names to match what is actually stored in T_TRANSACTIONTRACEPARAM.
+    """
+    if params.get("NIN"):
+        return "National ID"
+    if params.get("Iqama"):
+        return "Iqama"
+    if params.get("PassportNo"):
+        return "Passport"
+    if params.get("GCCId"):
+        return "GCC ID"
+    # Fall back to an explicit IdType param if present
+    return params.get("IdType") or params.get("EmployeeIdType") or "National ID"
 
 
 def _map_law_category(law_type: int | None) -> str:

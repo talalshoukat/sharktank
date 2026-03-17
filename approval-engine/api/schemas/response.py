@@ -15,6 +15,7 @@ class RuleBreakdown(BaseModel):
     kashif_score: int = 0
     nin_presence: int = 0
     contract_verification: int = 0
+    insurance_verification: int = 0
 
 
 class ScoreResponse(BaseModel):

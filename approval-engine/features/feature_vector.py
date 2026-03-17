@@ -18,7 +18,8 @@ def build_feature_vector(raw: dict) -> dict:
         law_type, law_category, nin_present, joining_date,
         est_approval_rate, contributor_approval_rate,
         violation_count_per_month, kashif_score, status,
-        contract_id   ← passed to HRSD for contract verification scoring
+        employee_id, employee_id_type, unified_national_no  ← HRSD + insurance inputs
+        engagement_start_date, engagement_end_date          ← insurance date range
 
     Returns:
         dict with all feature values required by rule_engine and ml_scorer.
@@ -49,8 +50,17 @@ def build_feature_vector(raw: dict) -> dict:
         # KASHIF fraud score (raw value, higher = more risk)
         "kashif_score": _safe_float(raw.get("kashif_score")),
 
-        # Contract ID for HRSD verification (from transaction params)
-        "contract_id": raw.get("contract_id"),
+        # ── HRSD + Insurance verification inputs ──────────────────────────
+        # employee_id / employee_id_type: the employee's identifier from transaction params.
+        # unified_national_no: employer's Unified National Number from the establishment record.
+        "employee_id": raw.get("employee_id"),
+        "employee_id_type": raw.get("employee_id_type", "National ID"),
+        "unified_national_no": raw.get("unified_national_no"),
+
+        # Engagement date range — used by the insurance checker.
+        # Derived from the violation/engagement request dates.
+        "engagement_start_date": raw.get("engagement_start_date"),
+        "engagement_end_date": raw.get("engagement_end_date"),
 
         # Ground truth label (only present during training)
         "is_approved": _encode_status(raw.get("status")),

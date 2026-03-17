@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from config.settings import settings
 from scoring.contract_scorer import score_contract_verification
+from scoring.insurance_scorer import score_insurance_verification
 
 
 def score_establishment_law(law_category: str | None) -> tuple[int, str | None]:
@@ -158,7 +159,18 @@ def compute_rule_score(features: dict) -> tuple[int, list[str], dict]:
         ("violation_history",      score_violation_history(features.get("violation_count_per_month", 0.0))),
         ("kashif_score",           score_kashif(features.get("kashif_score"))),
         ("nin_presence",           score_nin_presence(features.get("nin_present", False))),
-        ("contract_verification",  score_contract_verification(features.get("contract_id"))),
+        ("contract_verification",  score_contract_verification(
+            features.get("employee_id"),
+            features.get("employee_id_type"),
+            features.get("unified_national_no"),
+        )),
+        ("insurance_verification", score_insurance_verification(
+            features.get("employee_id"),
+            features.get("employee_id_type"),
+            features.get("unified_national_no"),
+            features.get("engagement_start_date"),
+            features.get("engagement_end_date"),
+        )),
     ]
 
     total = settings.base_score

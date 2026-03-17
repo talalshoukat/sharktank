@@ -1,74 +1,64 @@
 """
 Contract verification scoring.
 
-Calls the HRSD API (or mock) with the contract_id from the transaction,
-then compares the returned contract details against what was submitted.
-Discrepancies reduce the score; strong matches increase it.
+Calls HRSD with (employee_id, employee_id_type, unified_national_no),
+maps the returned verification_score (0–100) to rule engine points,
+and surfaces a reason string.
 
-In mock mode the HRSD client returns a random verification_score (0–100).
-The comparison bands below map that score to points + a reason string,
-so the full scoring pipeline runs end-to-end even without live API access.
+In mock mode the HRSD client returns a random verification_score.
+The bands below map that to points so the full pipeline runs end-to-end.
 
-When the real HRSD API is available, replace the mock and extend
-`_compare_contract_fields()` to do field-level matching.
+When the real HRSD API is available, extend `_compare_contract_fields()`
+for field-level matching instead of relying on HRSD's pre-computed score.
 """
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 
 from services.hrsd_client import HRSDClient, HRSDError
 
 logger = logging.getLogger(__name__)
 
-# Singleton client — stateless, safe to share
 _hrsd_client = HRSDClient()
 
-
-# ── Score bands for HRSD verification_score → points ─────────────────────────
-# verification_score comes from HRSD (0–100).
-# 0–100 maps to contract_points contribution in the overall rule engine.
-VERIFICATION_BANDS: list[tuple[int, int, int, str]] = [
-    # (low, high, points, reason)
-    (85, 100, 30, "Contract details fully verified with HRSD records (+30)"),
-    (65,  84, 15, "Contract details mostly match HRSD records (+15)"),
-    (40,  64,  0, None),   # neutral — partial match, no impact
+# (score_low, score_high, points, reason)
+VERIFICATION_BANDS: list[tuple[int, int, int, str | None]] = [
+    (85, 100,  30, "Contract details fully verified with HRSD records (+30)"),
+    (65,  84,  15, "Contract details mostly match HRSD records (+15)"),
+    (40,  64,   0, None),
     (20,  39, -15, "Partial mismatch in HRSD contract details (-15)"),
     (0,   19, -30, "Significant discrepancy between submission and HRSD contract (-30)"),
 ]
 
 
-def score_contract_verification(contract_id: str | None) -> tuple[int, str | None]:
+def score_contract_verification(
+    employee_id: str | None,
+    employee_id_type: str | None,
+    unified_national_no: str | None,
+) -> tuple[int, str | None]:
     """
-    Synchronous wrapper — calls the async HRSD lookup and returns (points, reason).
-    Safe to call from the synchronous rule engine and FastAPI path operations.
-
-    Returns (0, None) if contract_id is missing or HRSD call fails,
+    Synchronous wrapper — calls async HRSD lookup and returns (points, reason).
+    Returns (0, reason) when any required input is missing or the call fails,
     so a lookup failure never blocks the rest of scoring.
     """
-    if not contract_id:
-        return 0, "No contract ID present — HRSD verification skipped"
+    if not employee_id or not unified_national_no:
+        return 0, "Insufficient identity info — HRSD contract verification skipped"
+
+    id_type = employee_id_type or "National ID"
 
     try:
-        # Run the async client call in a synchronous context
-        try:
-            loop = asyncio.get_running_loop()
-            # We're inside an async context (e.g. FastAPI) — use a thread executor
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                future = pool.submit(asyncio.run, _hrsd_client.get_contract_details(contract_id))
-                contract = future.result(timeout=35)
-        except RuntimeError:
-            # No running loop — we're in a plain sync context (e.g. training pipeline)
-            contract = asyncio.run(_hrsd_client.get_contract_details(contract_id))
-
+        contract = _run_async(
+            _hrsd_client.get_contract_details(employee_id, id_type, unified_national_no)
+        )
         return _map_verification_score(contract.get("verification_score"), contract)
 
     except HRSDError as exc:
-        logger.warning("HRSD lookup failed for contract '%s': %s", contract_id, exc)
+        logger.warning("HRSD lookup failed: %s", exc)
         return 0, f"HRSD verification unavailable: {exc}"
-    except Exception as exc:
-        logger.exception("Unexpected error in HRSD contract scoring for '%s'", contract_id)
+    except Exception:
+        logger.exception("Unexpected error in HRSD contract scoring")
         return 0, "HRSD verification error — skipped"
 
 
@@ -76,13 +66,6 @@ def _map_verification_score(
     verification_score: float | None,
     contract: dict,
 ) -> tuple[int, str | None]:
-    """
-    Map HRSD verification_score to rule engine points.
-
-    When the live API is available, extend this to call
-    `_compare_contract_fields(contract, submitted_data)` for
-    field-level comparison rather than relying on HRSD's pre-computed score.
-    """
     if verification_score is None:
         return 0, "HRSD returned no verification score"
 
@@ -100,28 +83,39 @@ def _map_verification_score(
 
 def _compare_contract_fields(contract: dict, submitted: dict) -> float:
     """
-    Field-level comparison for use when the live HRSD API is available.
-    Returns a verification_score (0–100) based on how many key fields match.
-
-    Extend this as you learn which fields HRSD actually returns.
+    Field-level comparison for when the live HRSD API is available.
+    Returns verification_score (0–100) based on weighted field matches.
+    Extend as you learn which fields HRSD actually returns.
     """
     checks = [
-        # (contract_field, submitted_field, weight)
-        ("id_number",              submitted.get("nin"),               30),
-        ("establishment_unified_id", submitted.get("establishment_id"), 25),
-        ("nationality",            submitted.get("nationality"),        15),
-        ("job_title",              submitted.get("job_title"),          10),
-        ("contract_start_date",    submitted.get("joining_date"),       10),
-        ("gender",                 submitted.get("gender"),             10),
+        # (contract_field,              submitted_value,                    weight)
+        ("employee_id",                 submitted.get("employee_id"),        30),
+        ("establishment_unified_national_no", submitted.get("unified_national_no"), 25),
+        ("nationality",                 submitted.get("nationality"),         15),
+        ("job_title",                   submitted.get("job_title"),           10),
+        ("contract_start_date",         submitted.get("start_date"),          10),
+        ("gender",                      submitted.get("gender"),              10),
     ]
 
     total_weight = sum(w for _, _, w in checks)
-    matched_weight = 0.0
+    matched = 0.0
 
-    for contract_field, submitted_value, weight in checks:
-        contract_value = contract.get(contract_field)
+    for field, submitted_value, weight in checks:
+        contract_value = contract.get(field)
         if contract_value and submitted_value:
             if str(contract_value).strip().lower() == str(submitted_value).strip().lower():
-                matched_weight += weight
+                matched += weight
 
-    return (matched_weight / total_weight) * 100 if total_weight else 0.0
+    return (matched / total_weight) * 100 if total_weight else 0.0
+
+
+def _run_async(coro):
+    """Run an async coroutine from a synchronous context."""
+    try:
+        asyncio.get_running_loop()
+        # Inside an async event loop (FastAPI) — offload to a thread
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, coro).result(timeout=35)
+    except RuntimeError:
+        # No running loop (training pipeline, scripts)
+        return asyncio.run(coro)
